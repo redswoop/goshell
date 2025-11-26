@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Web Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            font-family: monospace;
+        }
+        #header {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 10px 20px;
+            font-size: 18px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #restart-btn {
+            background-color: #333;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            padding: 5px 15px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        #restart-btn:hover {
+            background-color: #444;
+        }
+        #restart-btn:active {
+            background-color: #222;
+        }
+        #terminal {
+            flex: 1;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <span>Html shell!</span>
+        <button id="restart-btn">Restart</button>
+    </div>
+    <div id="terminal"></div>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script>
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: {
+                background: '#1e1e1e',
+                foreground: '#d4d4d4'
+            }
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+
+        term.open(document.getElementById('terminal'));
+
+        // Function to send terminal size to backend
+        async function sendTerminalSize() {
+            const dims = term.rows && term.cols ? {
+                rows: term.rows,
+                cols: term.cols
+            } : null;
+
+            if (dims) {
+                console.log('Sending terminal size:', dims);
+                try {
+                    await fetch('/resize', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(dims)
+                    });
+                } catch (error) {
+                    console.error('Failed to send terminal size:', error);
+                }
+            }
+        }
+
+        // Fit terminal and send size
+        function fitAndResize() {
+            fitAddon.fit();
+            // Use setTimeout to ensure fit has completed
+            setTimeout(sendTerminalSize, 0);
+        }
+
+        // Initial fit and size
+        fitAndResize();
+
+        // Handle window resize
+        window.addEventListener('resize', fitAndResize);
+
+        // Connect to WebSocket
+        const ws = new WebSocket('ws://127.0.0.1:7777/ws/shell');
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+        };
+
+        ws.onmessage = (event) => {
+            const data = new Uint8Array(event.data);
+            term.write(data);
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            term.write('\r\n\x1b[31mWebSocket connection error\x1b[0m\r\n');
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket disconnected');
+            term.write('\r\n\x1b[31mConnection closed\x1b[0m\r\n');
+        };
+
+        // Send terminal input to WebSocket
+        term.onData((data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        });
+
+        // Handle restart button
+        document.getElementById('restart-btn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/restart', { method: 'POST' });
+                if (response.ok) {
+                    term.clear();
+                    fitAndResize();
+                    console.log('Shell restarted');
+                } else {
+                    console.error('Failed to restart shell');
+                    term.write('\r\n\x1b[31mFailed to restart shell\x1b[0m\r\n');
+                }
+            } catch (error) {
+                console.error('Restart error:', error);
+                term.write('\r\n\x1b[31mRestart error\x1b[0m\r\n');
+            }
+        });
+    </script>
+</body>
+</html>
