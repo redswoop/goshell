@@ -75,7 +75,10 @@ func getForegroundPGID(fd uintptr) (int, error) {
 
 func newShellServer() (*ShellServer, error) {
 	cmd := exec.Command("zsh", "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// Add lsh directory to PATH
+	lshPath, _ := os.Getwd()
+	newPath := fmt.Sprintf("%s/lsh:%s", lshPath, os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PATH="+newPath)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: 24,
@@ -131,7 +134,10 @@ func (s *ShellServer) restart() error {
 	}
 
 	cmd := exec.Command("zsh", "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// Add lsh directory to PATH
+	lshPath, _ := os.Getwd()
+	newPath := fmt.Sprintf("%s/lsh:%s", lshPath, os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PATH="+newPath)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: 24,

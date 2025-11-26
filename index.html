@@ -10,8 +10,8 @@
             padding: 0;
             background-color: #000;
             height: 100vh;
-            display: grid;
-            grid-template-rows: auto 1fr auto;
+            display: flex;
+            flex-direction: column;
             font-family: monospace;
             overflow: hidden;
         }
@@ -24,8 +24,9 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-shrink: 0;
         }
-        #restart-btn {
+        .header-btn {
             background-color: #333;
             color: #d4d4d4;
             border: 1px solid #555;
@@ -33,17 +34,33 @@
             cursor: pointer;
             font-family: monospace;
             font-size: 14px;
+            margin-left: 10px;
         }
-        #restart-btn:hover {
+        .header-btn:hover {
             background-color: #444;
         }
-        #restart-btn:active {
+        .header-btn:active {
             background-color: #222;
         }
         #terminal {
             width: 100%;
-            height: 100%;
+            flex: 1;
             overflow: hidden;
+        }
+        #html-output {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 0;
+            overflow-y: auto;
+            max-height: 0;
+            border-bottom: 1px solid #333;
+            transition: max-height 0.3s ease;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            flex-shrink: 0;
+        }
+        #html-output.visible {
+            padding: 20px;
+            max-height: 400px;
         }
         #status {
             background-color: #1e1e1e;
@@ -51,14 +68,19 @@
             padding: 5px 20px;
             font-size: 12px;
             border-top: 1px solid #333;
+            flex-shrink: 0;
         }
     </style>
 </head>
 <body>
     <div id="header">
         <span>Html shell!</span>
-        <button id="restart-btn">Restart</button>
+        <div>
+            <button id="toggle-html-btn" class="header-btn">Show HTML</button>
+            <button id="restart-btn" class="header-btn">Restart</button>
+        </div>
     </div>
+    <div id="html-output"></div>
     <div id="terminal"></div>
     <div id="status">waiting</div>
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
@@ -124,6 +146,10 @@
             console.log('WebSocket connected');
         };
 
+        // HTML mode state
+        let htmlMode = false;
+        let htmlBuffer = '';
+
         ws.onmessage = (event) => {
             // Check if this is a text message (status update)
             if (typeof event.data === 'string') {
@@ -138,7 +164,42 @@
             } else {
                 // Binary message - terminal output
                 const data = new Uint8Array(event.data);
-                term.write(data);
+                const text = new TextDecoder().decode(data);
+
+                // Check for HTML mode escape sequences
+                // ESC]9001;HTML_START\x07 and ESC]9001;HTML_END\x07
+                if (text.includes('\x1b]9001;HTML_START\x07')) {
+                    htmlMode = true;
+                    htmlBuffer = '';
+                    // Don't write the escape sequence to terminal
+                    return;
+                }
+
+                if (text.includes('\x1b]9001;HTML_END\x07')) {
+                    htmlMode = false;
+                    // Render accumulated HTML
+                    const htmlOutput = document.getElementById('html-output');
+                    htmlOutput.innerHTML = htmlBuffer;
+                    htmlOutput.classList.add('visible');
+                    document.getElementById('toggle-html-btn').textContent = 'Hide HTML';
+                    htmlBuffer = '';
+
+                    // Resize terminal after HTML panel appears
+                    setTimeout(() => {
+                        fitAndResize();
+                    }, 350);
+
+                    // Don't write the escape sequence to terminal
+                    return;
+                }
+
+                if (htmlMode) {
+                    // Accumulate HTML content
+                    htmlBuffer += text;
+                } else {
+                    // Normal terminal output
+                    term.write(data);
+                }
             }
         };
 
@@ -157,6 +218,25 @@
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(data);
             }
+        });
+
+        // Handle toggle HTML button
+        document.getElementById('toggle-html-btn').addEventListener('click', () => {
+            const htmlOutput = document.getElementById('html-output');
+            const toggleBtn = document.getElementById('toggle-html-btn');
+
+            if (htmlOutput.classList.contains('visible')) {
+                htmlOutput.classList.remove('visible');
+                toggleBtn.textContent = 'Show HTML';
+            } else {
+                htmlOutput.classList.add('visible');
+                toggleBtn.textContent = 'Hide HTML';
+            }
+
+            // Wait for CSS transition to complete, then resize terminal
+            setTimeout(() => {
+                fitAndResize();
+            }, 350); // Slightly longer than the 300ms CSS transition
         });
 
         // Handle restart button
