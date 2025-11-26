@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
+	"unsafe"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -55,6 +59,18 @@ type ShellServer struct {
 
 	buffer   []byte
 	bufferMu sync.Mutex
+
+	shellPGID int // The shell's process group ID (idle state)
+}
+
+// getForegroundPGID gets the current foreground process group ID
+func getForegroundPGID(fd uintptr) (int, error) {
+	var pgid int
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgid)))
+	if errno != 0 {
+		return 0, errno
+	}
+	return pgid, nil
 }
 
 func newShellServer() (*ShellServer, error) {
@@ -69,20 +85,47 @@ func newShellServer() (*ShellServer, error) {
 		return nil, fmt.Errorf("start zsh pty: %w", err)
 	}
 
+	// Wait a bit for shell to start, then capture its PGID
+	time.Sleep(100 * time.Millisecond)
+	shellPGID, err := getForegroundPGID(ptyFile.Fd())
+	if err != nil {
+		ptyFile.Close()
+		return nil, fmt.Errorf("get shell PGID: %w", err)
+	}
+
 	server := &ShellServer{
-		ptyFile: ptyFile,
-		clients: make(map[*websocket.Conn]struct{}),
-		widgets: make(map[string]*Widget),
+		ptyFile:   ptyFile,
+		clients:   make(map[*websocket.Conn]struct{}),
+		widgets:   make(map[string]*Widget),
+		shellPGID: shellPGID,
 	}
 
 	go server.streamPTY()
+	go server.monitorStatus()
 	return server, nil
+}
+
+// containsAltScreenExit checks if data contains escape sequences that exit alternate screen buffer
+func containsAltScreenExit(data []byte) bool {
+	// Common sequences for exiting alternate screen:
+	// ESC [ ? 1049 l  (xterm)
+	// ESC [ ? 47 l    (older xterm)
+	// ESC [ ? 1047 l  (another variant)
+	patterns := [][]byte{
+		[]byte("\x1b[?1049l"),
+		[]byte("\x1b[?47l"),
+		[]byte("\x1b[?1047l"),
+	}
+	for _, pattern := range patterns {
+		if bytes.Contains(data, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ShellServer) restart() error {
 	s.ptyMu.Lock()
-	defer s.ptyMu.Unlock()
-
 	if s.ptyFile != nil {
 		s.ptyFile.Close()
 	}
@@ -95,16 +138,27 @@ func (s *ShellServer) restart() error {
 		Cols: 80,
 	})
 	if err != nil {
+		s.ptyMu.Unlock()
 		return fmt.Errorf("restart zsh pty: %w", err)
 	}
 
 	s.ptyFile = ptyFile
+	s.ptyMu.Unlock()
+
+	// Wait for shell to start, then capture new PGID
+	time.Sleep(100 * time.Millisecond)
+	shellPGID, err := getForegroundPGID(ptyFile.Fd())
+	if err != nil {
+		return fmt.Errorf("get shell PGID after restart: %w", err)
+	}
+	s.shellPGID = shellPGID
 
 	s.bufferMu.Lock()
 	s.buffer = nil
 	s.bufferMu.Unlock()
 
 	go s.streamPTY()
+	go s.monitorStatus()
 	return nil
 }
 
@@ -115,6 +169,11 @@ func (s *ShellServer) streamPTY() {
 		if n > 0 {
 			data := buf[:n]
 			s.bufferMu.Lock()
+			// If we're exiting alternate screen buffer, clear the history
+			// since that content is no longer visible
+			if containsAltScreenExit(data) {
+				s.buffer = nil
+			}
 			s.buffer = append(s.buffer, data...)
 			if len(s.buffer) > 64*1024 {
 				s.buffer = s.buffer[len(s.buffer)-64*1024:]
@@ -141,6 +200,56 @@ func (s *ShellServer) broadcast(data []byte) {
 		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			log.Printf("websocket write error: %v", err)
 			s.unregisterClient(conn)
+		}
+	}
+}
+
+func (s *ShellServer) broadcastStatus(state string) {
+	s.clientsMu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for conn := range s.clients {
+		conns = append(conns, conn)
+	}
+	s.clientsMu.RUnlock()
+
+	msg := map[string]string{"kind": "status", "state": state}
+	data, _ := json.Marshal(msg)
+
+	for _, conn := range conns {
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("websocket status write error: %v", err)
+		}
+	}
+}
+
+func (s *ShellServer) monitorStatus() {
+	lastState := "waiting"
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.ptyMu.Lock()
+		if s.ptyFile == nil {
+			s.ptyMu.Unlock()
+			return
+		}
+		pgid, err := getForegroundPGID(s.ptyFile.Fd())
+		s.ptyMu.Unlock()
+
+		if err != nil {
+			continue
+		}
+
+		var newState string
+		if pgid == s.shellPGID {
+			newState = "waiting"
+		} else {
+			newState = "running"
+		}
+
+		if newState != lastState {
+			s.broadcastStatus(newState)
+			lastState = newState
 		}
 	}
 }
