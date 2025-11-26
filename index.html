@@ -167,16 +167,37 @@
                 const text = new TextDecoder().decode(data);
 
                 // Check for HTML mode escape sequences
-                // ESC]9001;HTML_START\x07 and ESC]9001;HTML_END\x07
-                if (text.includes('\x1b]9001;HTML_START\x07')) {
+                const htmlStartSeq = '\x1b]9001;HTML_START\x07';
+                const htmlEndSeq = '\x1b]9001;HTML_END\x07';
+
+                const startIndex = text.indexOf(htmlStartSeq);
+                const endIndex = text.indexOf(htmlEndSeq);
+
+                if (startIndex !== -1) {
+                    // Found HTML_START
+                    // Write everything before the sequence to terminal
+                    if (startIndex > 0) {
+                        const before = text.substring(0, startIndex);
+                        term.write(before);
+                    }
                     htmlMode = true;
                     htmlBuffer = '';
-                    // Don't write the escape sequence to terminal
+                    // Keep everything after the start sequence
+                    const after = text.substring(startIndex + htmlStartSeq.length);
+                    if (after.length > 0) {
+                        htmlBuffer = after;
+                    }
                     return;
                 }
 
-                if (text.includes('\x1b]9001;HTML_END\x07')) {
+                if (endIndex !== -1) {
+                    // Found HTML_END
+                    // Add everything before the sequence to HTML buffer
+                    if (endIndex > 0) {
+                        htmlBuffer += text.substring(0, endIndex);
+                    }
                     htmlMode = false;
+
                     // Render accumulated HTML
                     const htmlOutput = document.getElementById('html-output');
                     htmlOutput.innerHTML = htmlBuffer;
@@ -184,12 +205,17 @@
                     document.getElementById('toggle-html-btn').textContent = 'Hide HTML';
                     htmlBuffer = '';
 
+                    // Write everything after the sequence to terminal
+                    const after = text.substring(endIndex + htmlEndSeq.length);
+                    if (after.length > 0) {
+                        term.write(after);
+                    }
+
                     // Resize terminal after HTML panel appears
                     setTimeout(() => {
                         fitAndResize();
                     }, 350);
 
-                    // Don't write the escape sequence to terminal
                     return;
                 }
 
@@ -256,6 +282,18 @@
                 term.write('\r\n\x1b[31mRestart error\x1b[0m\r\n');
             }
         });
+
+        // Global function for HTML widgets to run shell commands
+        window.runCommand = function(cmd) {
+            fetch('/widget/lsh-sort/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: 'shell',
+                    cmd: cmd
+                })
+            }).catch(err => console.error('Failed to run command:', err));
+        };
     </script>
 </body>
 </html>

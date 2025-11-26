@@ -1,8 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -13,9 +16,27 @@ const (
 )
 
 func main() {
+	// Parse flags
+	sortTime := flag.Bool("t", false, "sort by modification time")
+	sortSize := flag.Bool("S", false, "sort by size")
+	sortReverse := flag.Bool("r", false, "reverse sort order")
+	flag.Parse()
+
 	dir := "."
-	if len(os.Args) > 1 {
-		dir = os.Args[1]
+	if flag.NArg() > 0 {
+		dir = flag.Arg(0)
+	}
+
+	// Get absolute path to this executable
+	exePath, err := os.Executable()
+	if err != nil {
+		exePath = "lsh" // fallback
+	}
+
+	// Get absolute path to directory
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		absDir = dir
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -24,12 +45,92 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Sort entries based on flags
+	sortedEntries := make([]os.DirEntry, len(entries))
+	copy(sortedEntries, entries)
+
+	if *sortTime {
+		sort.Slice(sortedEntries, func(i, j int) bool {
+			infoI, _ := sortedEntries[i].Info()
+			infoJ, _ := sortedEntries[j].Info()
+			if *sortReverse {
+				return infoI.ModTime().Before(infoJ.ModTime())
+			}
+			return infoI.ModTime().After(infoJ.ModTime())
+		})
+	} else if *sortSize {
+		sort.Slice(sortedEntries, func(i, j int) bool {
+			infoI, _ := sortedEntries[i].Info()
+			infoJ, _ := sortedEntries[j].Info()
+			if *sortReverse {
+				return infoI.Size() < infoJ.Size()
+			}
+			return infoI.Size() > infoJ.Size()
+		})
+	} else {
+		// Sort by name
+		sort.Slice(sortedEntries, func(i, j int) bool {
+			if *sortReverse {
+				return sortedEntries[i].Name() > sortedEntries[j].Name()
+			}
+			return sortedEntries[i].Name() < sortedEntries[j].Name()
+		})
+	}
+
+	// Build command line representation
+	cmdLine := "lsh"
+	if len(os.Args) > 1 {
+		cmdLine = strings.Join(os.Args, " ")
+	}
+
 	// Start HTML mode
 	fmt.Print(htmlStart)
 
 	// Build HTML output
 	var html strings.Builder
 	html.WriteString(`<style>
+.lsh-header {
+	margin-bottom: 20px;
+	padding-bottom: 15px;
+	border-bottom: 1px solid #404040;
+}
+.lsh-title {
+	font-size: 20px;
+	font-weight: 600;
+	color: #61afef;
+	margin-bottom: 8px;
+}
+.lsh-meta {
+	font-size: 12px;
+	color: #888;
+	margin-bottom: 10px;
+}
+.lsh-meta-label {
+	color: #666;
+	margin-right: 4px;
+}
+.lsh-sort-buttons {
+	display: flex;
+	gap: 8px;
+	margin-top: 10px;
+}
+.lsh-sort-btn {
+	background-color: #2d2d2d;
+	color: #61afef;
+	border: 1px solid #404040;
+	padding: 6px 12px;
+	border-radius: 4px;
+	font-size: 11px;
+	cursor: pointer;
+	text-decoration: none;
+	transition: all 0.2s;
+	display: inline-block;
+}
+.lsh-sort-btn:hover {
+	background-color: #363636;
+	border-color: #505050;
+	transform: translateY(-1px);
+}
 .file-list {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -71,10 +172,22 @@ func main() {
 }
 </style>
 
-<h2>` + dir + `</h2>
+<div class="lsh-header">
+	<div class="lsh-title">` + htmlEscape(absDir) + `</div>
+	<div class="lsh-meta">
+		<span class="lsh-meta-label">$</span>` + htmlEscape(cmdLine) + `
+	</div>
+	<div class="lsh-sort-buttons">
+		<a href="#" class="lsh-sort-btn" onclick="runCommand(&quot;` + htmlEscape(shellQuote(exePath)+" "+shellQuote(absDir)) + `&quot;); return false;">Name</a>
+		<a href="#" class="lsh-sort-btn" onclick="runCommand(&quot;` + htmlEscape(shellQuote(exePath)+" -t "+shellQuote(absDir)) + `&quot;); return false;">Date</a>
+		<a href="#" class="lsh-sort-btn" onclick="runCommand(&quot;` + htmlEscape(shellQuote(exePath)+" -S "+shellQuote(absDir)) + `&quot;); return false;">Size</a>
+		<a href="#" class="lsh-sort-btn" onclick="runCommand(&quot;` + htmlEscape(shellQuote(exePath)+" -r "+shellQuote(absDir)) + `&quot;); return false;">Reverse</a>
+	</div>
+</div>
+
 <div class="file-list">`)
 
-	for _, entry := range entries {
+	for _, entry := range sortedEntries {
 		info, err := entry.Info()
 		if err != nil {
 			continue
@@ -104,9 +217,11 @@ func main() {
 
 	// Output the HTML
 	fmt.Print(html.String())
+	os.Stdout.Sync()
 
 	// End HTML mode
-	fmt.Print(htmlEnd)
+	fmt.Println(htmlEnd)
+	os.Stdout.Sync()
 }
 
 func formatSize(size int64) string {
@@ -129,4 +244,9 @@ func htmlEscape(s string) string {
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	s = strings.ReplaceAll(s, "'", "&#39;")
 	return s
+}
+
+func shellQuote(s string) string {
+	// Simple shell quoting: wrap in single quotes and escape any single quotes
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
