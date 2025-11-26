@@ -110,6 +110,9 @@
         // Initial fit and size
         fitAndResize();
 
+        // Focus the terminal
+        term.focus();
+
         // Handle window resize
         window.addEventListener('resize', fitAndResize);
 
