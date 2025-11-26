@@ -85,6 +85,7 @@
     <div id="status">waiting</div>
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script>
         const term = new Terminal({
             cursorBlink: true,
@@ -93,6 +94,31 @@
             theme: {
                 background: '#1e1e1e',
                 foreground: '#d4d4d4'
+            },
+            linkHandler: {
+                activate: (event, uri) => {
+                    // Handle custom htmlwidget: URLs
+                    if (uri.startsWith('htmlwidget:')) {
+                        const widgetID = uri.substring('htmlwidget:'.length);
+                        // Fetch and display the HTML
+                        fetch(`/htmlwidget/${widgetID}`)
+                            .then(response => response.text())
+                            .then(html => {
+                                const htmlOutput = document.getElementById('html-output');
+                                htmlOutput.innerHTML = html;
+                                htmlOutput.classList.add('visible');
+                                document.getElementById('toggle-html-btn').textContent = 'Hide HTML';
+                                setTimeout(() => {
+                                    fitAndResize();
+                                }, 350);
+                            })
+                            .catch(err => console.error('Failed to load HTML widget:', err));
+                        return;
+                    }
+                    // Default behavior for http/https
+                    window.open(uri, '_blank');
+                },
+                allowNonHttpProtocols: true
             }
         });
 
@@ -146,86 +172,38 @@
             console.log('WebSocket connected');
         };
 
-        // HTML mode state
-        let htmlMode = false;
-        let htmlBuffer = '';
-
         ws.onmessage = (event) => {
-            // Check if this is a text message (status update)
+            // Check if this is a text message (status update or HTML notification)
             if (typeof event.data === 'string') {
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.kind === 'status') {
                         document.getElementById('status').textContent = msg.state;
+                    } else if (msg.kind === 'html') {
+                        // Server is notifying us of new HTML content
+                        const widgetID = msg.widget_id;
+                        // Fetch and display the HTML
+                        fetch(`/htmlwidget/${widgetID}`)
+                            .then(response => response.text())
+                            .then(html => {
+                                const htmlOutput = document.getElementById('html-output');
+                                htmlOutput.innerHTML = html;
+                                htmlOutput.classList.add('visible');
+                                document.getElementById('toggle-html-btn').textContent = 'Hide HTML';
+                                setTimeout(() => {
+                                    fitAndResize();
+                                }, 350);
+                            })
+                            .catch(err => console.error('Failed to load HTML widget:', err));
                     }
                 } catch (e) {
-                    console.error('Failed to parse status message:', e);
+                    console.error('Failed to parse message:', e);
                 }
             } else {
                 // Binary message - terminal output
+                // Server has already replaced HTML with links for the buffer
                 const data = new Uint8Array(event.data);
-                const text = new TextDecoder().decode(data);
-
-                // Check for HTML mode escape sequences
-                const htmlStartSeq = '\x1b]9001;HTML_START\x07';
-                const htmlEndSeq = '\x1b]9001;HTML_END\x07';
-
-                const startIndex = text.indexOf(htmlStartSeq);
-                const endIndex = text.indexOf(htmlEndSeq);
-
-                if (startIndex !== -1) {
-                    // Found HTML_START
-                    // Write everything before the sequence to terminal
-                    if (startIndex > 0) {
-                        const before = text.substring(0, startIndex);
-                        term.write(before);
-                    }
-                    htmlMode = true;
-                    htmlBuffer = '';
-                    // Keep everything after the start sequence
-                    const after = text.substring(startIndex + htmlStartSeq.length);
-                    if (after.length > 0) {
-                        htmlBuffer = after;
-                    }
-                    return;
-                }
-
-                if (endIndex !== -1) {
-                    // Found HTML_END
-                    // Add everything before the sequence to HTML buffer
-                    if (endIndex > 0) {
-                        htmlBuffer += text.substring(0, endIndex);
-                    }
-                    htmlMode = false;
-
-                    // Render accumulated HTML
-                    const htmlOutput = document.getElementById('html-output');
-                    htmlOutput.innerHTML = htmlBuffer;
-                    htmlOutput.classList.add('visible');
-                    document.getElementById('toggle-html-btn').textContent = 'Hide HTML';
-                    htmlBuffer = '';
-
-                    // Write everything after the sequence to terminal
-                    const after = text.substring(endIndex + htmlEndSeq.length);
-                    if (after.length > 0) {
-                        term.write(after);
-                    }
-
-                    // Resize terminal after HTML panel appears
-                    setTimeout(() => {
-                        fitAndResize();
-                    }, 350);
-
-                    return;
-                }
-
-                if (htmlMode) {
-                    // Accumulate HTML content
-                    htmlBuffer += text;
-                } else {
-                    // Normal terminal output
-                    term.write(data);
-                }
+                term.write(data);
             }
         };
 

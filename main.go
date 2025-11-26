@@ -51,14 +51,23 @@ type ShellServer struct {
 	ptyFile *os.File
 	ptyMu   sync.Mutex
 
-	clients   map[*websocket.Conn]struct{}
-	clientsMu sync.RWMutex
+	clients      map[*websocket.Conn]struct{}
+	clientsMu    sync.RWMutex
+	connWriteMu  map[*websocket.Conn]*sync.Mutex // Per-connection write mutex
+	connWriteMuM sync.Mutex                       // Mutex for connWriteMu map
 
 	widgets   map[string]*Widget
 	widgetsMu sync.RWMutex
 
+	htmlWidgets   map[int]string // Stores HTML content by widget ID
+	htmlWidgetsMu sync.RWMutex
+	htmlCounter   int
+
 	buffer   []byte
 	bufferMu sync.Mutex
+
+	htmlBuffer []byte // Accumulates incomplete HTML blocks across PTY reads
+	htmlBufMu  sync.Mutex
 
 	shellPGID int // The shell's process group ID (idle state)
 }
@@ -97,10 +106,12 @@ func newShellServer() (*ShellServer, error) {
 	}
 
 	server := &ShellServer{
-		ptyFile:   ptyFile,
-		clients:   make(map[*websocket.Conn]struct{}),
-		widgets:   make(map[string]*Widget),
-		shellPGID: shellPGID,
+		ptyFile:     ptyFile,
+		clients:     make(map[*websocket.Conn]struct{}),
+		connWriteMu: make(map[*websocket.Conn]*sync.Mutex),
+		widgets:     make(map[string]*Widget),
+		htmlWidgets: make(map[int]string),
+		shellPGID:   shellPGID,
 	}
 
 	go server.streamPTY()
@@ -125,6 +136,84 @@ func containsAltScreenExit(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// extractAndStoreHTML extracts HTML content from accumulated PTY data and stores it
+// Returns: (processedData, remainingBuffer, widgetIDs)
+// - processedData: data with HTML blocks replaced by links
+// - remainingBuffer: incomplete HTML block data to keep for next read
+// - widgetIDs: IDs of extracted widgets
+func (s *ShellServer) extractAndStoreHTML(data []byte) ([]byte, []byte, []int) {
+	htmlStart := []byte("\x1b]9001;HTML_START\x07")
+	htmlEnd := []byte("\x1b]9001;HTML_END\x07")
+
+	result := data
+	var widgetIDs []int
+
+	for {
+		startIdx := bytes.Index(result, htmlStart)
+		if startIdx == -1 {
+			// No HTML_START found, return all data as processed
+			return result, nil, widgetIDs
+		}
+
+		endIdx := bytes.Index(result[startIdx:], htmlEnd)
+		if endIdx == -1 {
+			// Found HTML_START but no HTML_END - keep this for next read
+			return result[:startIdx], result[startIdx:], widgetIDs
+		}
+
+		// Extract the HTML content
+		htmlContentStart := startIdx + len(htmlStart)
+		htmlContentEnd := startIdx + endIdx
+		htmlContent := result[htmlContentStart:htmlContentEnd]
+
+		// Store the HTML content with a unique ID
+		s.htmlWidgetsMu.Lock()
+		s.htmlCounter++
+		widgetID := s.htmlCounter
+		s.htmlWidgets[widgetID] = string(htmlContent)
+		s.htmlWidgetsMu.Unlock()
+
+		widgetIDs = append(widgetIDs, widgetID)
+
+		// Create a clickable link using OSC 8 hyperlinks
+		linkText := fmt.Sprintf("View HTML Output #%d", widgetID)
+		replacement := []byte(fmt.Sprintf("\x1b]8;;htmlwidget:%d\x07\x1b[34;4m%s\x1b[0m\x1b]8;;\x07",
+			widgetID, linkText))
+
+		// Replace from HTML_START to HTML_END with the link
+		endIdx += startIdx + len(htmlEnd)
+		result = append(result[:startIdx], append(replacement, result[endIdx:]...)...)
+	}
+}
+
+// stripHTMLMode removes HTML mode sequences from buffer (used for cleaning up buffer)
+func stripHTMLMode(data []byte) []byte {
+	htmlStart := []byte("\x1b]9001;HTML_START\x07")
+	htmlEnd := []byte("\x1b]9001;HTML_END\x07")
+
+	result := data
+
+	for {
+		startIdx := bytes.Index(result, htmlStart)
+		if startIdx == -1 {
+			break
+		}
+
+		endIdx := bytes.Index(result[startIdx:], htmlEnd)
+		if endIdx == -1 {
+			// No matching end, strip from start to end of buffer
+			result = result[:startIdx]
+			break
+		}
+
+		// Just remove the HTML block entirely
+		endIdx += startIdx + len(htmlEnd)
+		result = append(result[:startIdx], result[endIdx:]...)
+	}
+
+	return result
 }
 
 func (s *ShellServer) restart() error {
@@ -174,18 +263,49 @@ func (s *ShellServer) streamPTY() {
 		n, err := s.ptyFile.Read(buf)
 		if n > 0 {
 			data := buf[:n]
+
+			// Append to HTML buffer to handle HTML content split across reads
+			s.htmlBufMu.Lock()
+			s.htmlBuffer = append(s.htmlBuffer, data...)
+
+			// Try to extract complete HTML blocks from the accumulated buffer
+			processedData, remainingBuf, widgetIDs := s.extractAndStoreHTML(s.htmlBuffer)
+
+			// Keep any incomplete HTML block for next read
+			s.htmlBuffer = remainingBuf
+			s.htmlBufMu.Unlock()
+
+			if len(widgetIDs) > 0 {
+				log.Printf("DEBUG: Extracted %d HTML widgets, processed data length: %d bytes", len(widgetIDs), len(processedData))
+				previewLen := 200
+				if len(processedData) < previewLen {
+					previewLen = len(processedData)
+				}
+				log.Printf("DEBUG: First %d bytes of processed data: %q", previewLen, string(processedData[:previewLen]))
+			}
+
 			s.bufferMu.Lock()
 			// If we're exiting alternate screen buffer, clear the history
 			// since that content is no longer visible
 			if containsAltScreenExit(data) {
 				s.buffer = nil
 			}
-			s.buffer = append(s.buffer, data...)
+			// Add processed data (with links instead of HTML) to buffer
+			s.buffer = append(s.buffer, processedData...)
+			// Clean up any HTML sequences that might be in the buffer
+			s.buffer = stripHTMLMode(s.buffer)
 			if len(s.buffer) > 64*1024 {
 				s.buffer = s.buffer[len(s.buffer)-64*1024:]
 			}
 			s.bufferMu.Unlock()
-			s.broadcast(data)
+
+			// Broadcast processed data (with links) to all clients
+			s.broadcast(processedData)
+
+			// Notify live clients about new HTML widgets so they auto-display
+			for _, widgetID := range widgetIDs {
+				s.broadcastHTMLNotification(widgetID)
+			}
 		}
 		if err != nil {
 			log.Printf("pty read error: %v", err)
@@ -203,7 +323,20 @@ func (s *ShellServer) broadcast(data []byte) {
 	s.clientsMu.RUnlock()
 
 	for _, conn := range conns {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		// Get the write mutex for this connection
+		s.connWriteMuM.Lock()
+		mu, ok := s.connWriteMu[conn]
+		s.connWriteMuM.Unlock()
+
+		if !ok {
+			continue // Connection was removed
+		}
+
+		mu.Lock()
+		err := conn.WriteMessage(websocket.BinaryMessage, data)
+		mu.Unlock()
+
+		if err != nil {
 			log.Printf("websocket write error: %v", err)
 			s.unregisterClient(conn)
 		}
@@ -222,8 +355,52 @@ func (s *ShellServer) broadcastStatus(state string) {
 	data, _ := json.Marshal(msg)
 
 	for _, conn := range conns {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		// Get the write mutex for this connection
+		s.connWriteMuM.Lock()
+		mu, ok := s.connWriteMu[conn]
+		s.connWriteMuM.Unlock()
+
+		if !ok {
+			continue // Connection was removed
+		}
+
+		mu.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, data)
+		mu.Unlock()
+
+		if err != nil {
 			log.Printf("websocket status write error: %v", err)
+		}
+	}
+}
+
+func (s *ShellServer) broadcastHTMLNotification(widgetID int) {
+	s.clientsMu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for conn := range s.clients {
+		conns = append(conns, conn)
+	}
+	s.clientsMu.RUnlock()
+
+	msg := map[string]interface{}{"kind": "html", "widget_id": widgetID}
+	data, _ := json.Marshal(msg)
+
+	for _, conn := range conns {
+		// Get the write mutex for this connection
+		s.connWriteMuM.Lock()
+		mu, ok := s.connWriteMu[conn]
+		s.connWriteMuM.Unlock()
+
+		if !ok {
+			continue // Connection was removed
+		}
+
+		mu.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, data)
+		mu.Unlock()
+
+		if err != nil {
+			log.Printf("websocket html notification write error: %v", err)
 		}
 	}
 }
@@ -268,6 +445,11 @@ func (s *ShellServer) writeToPTY(data []byte) error {
 }
 
 func (s *ShellServer) addClient(conn *websocket.Conn) {
+	// Create a write mutex for this connection
+	s.connWriteMuM.Lock()
+	s.connWriteMu[conn] = &sync.Mutex{}
+	s.connWriteMuM.Unlock()
+
 	s.clientsMu.Lock()
 	s.clients[conn] = struct{}{}
 	s.clientsMu.Unlock()
@@ -278,7 +460,14 @@ func (s *ShellServer) addClient(conn *websocket.Conn) {
 	s.bufferMu.Unlock()
 
 	if len(buffered) > 0 {
+		// Use the write mutex for initial buffered data
+		s.connWriteMuM.Lock()
+		mu := s.connWriteMu[conn]
+		s.connWriteMuM.Unlock()
+
+		mu.Lock()
 		conn.WriteMessage(websocket.BinaryMessage, buffered)
+		mu.Unlock()
 	}
 }
 
@@ -286,6 +475,11 @@ func (s *ShellServer) unregisterClient(conn *websocket.Conn) {
 	s.clientsMu.Lock()
 	delete(s.clients, conn)
 	s.clientsMu.Unlock()
+
+	s.connWriteMuM.Lock()
+	delete(s.connWriteMu, conn)
+	s.connWriteMuM.Unlock()
+
 	conn.Close()
 }
 
@@ -409,6 +603,38 @@ func (s *ShellServer) handleWidgetAction(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *ShellServer) handleHTMLWidget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract widget ID from path: /htmlwidget/123
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/htmlwidget/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	var widgetID int
+	if _, err := fmt.Sscanf(parts[0], "%d", &widgetID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.htmlWidgetsMu.RLock()
+	htmlContent, ok := s.htmlWidgets[widgetID]
+	s.htmlWidgetsMu.RUnlock()
+
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(htmlContent))
+}
+
 func widgetIDFromPath(path string) (string, error) {
 	const prefix = "/widget/"
 	if !strings.HasPrefix(path, prefix) {
@@ -454,6 +680,7 @@ func main() {
 	http.HandleFunc("/restart", server.handleRestart)
 	http.HandleFunc("/resize", server.handleResize)
 	http.HandleFunc("/widget/", server.handleWidgetAction)
+	http.HandleFunc("/htmlwidget/", server.handleHTMLWidget)
 
 	log.Printf("server listening on http://%s", listenAddr)
 	if err := http.ListenAndServe(listenAddr, nil); err != nil {
