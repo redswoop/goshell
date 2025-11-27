@@ -1,0 +1,92 @@
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #000;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: monospace;
+    overflow: hidden;
+}
+
+#header {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px 20px;
+    font-size: 18px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.header-btn {
+    background-color: #333;
+    color: #d4d4d4;
+    border: 1px solid #555;
+    padding: 5px 15px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 14px;
+    margin-left: 10px;
+}
+
+.header-btn:hover {
+    background-color: #444;
+}
+
+.header-btn:active {
+    background-color: #222;
+}
+
+#terminal {
+    width: 100%;
+    flex: 1;
+    overflow: hidden;
+}
+
+#html-output {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    padding: 0;
+    overflow-y: scroll;
+    height: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    flex-shrink: 0;
+}
+
+#html-output.visible {
+    padding: 20px;
+    height: 300px;
+}
+
+#html-output.animating {
+    transition: height 0.3s ease;
+}
+
+#splitter {
+    height: 6px;
+    background-color: #333;
+    cursor: ns-resize;
+    flex-shrink: 0;
+    display: none;
+}
+
+#splitter:hover,
+#splitter.dragging {
+    background-color: #555;
+}
+
+#splitter.visible {
+    display: block;
+}
+
+#status {
+    background-color: #1e1e1e;
+    color: #888;
+    padding: 5px 20px;
+    font-size: 12px;
+    border-top: 1px solid #333;
+    flex-shrink: 0;
+}

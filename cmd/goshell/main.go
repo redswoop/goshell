@@ -445,7 +445,7 @@ func (s *ShellServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "index.html")
+	http.ServeFile(w, r, "web/index.html")
 }
 
 func (s *ShellServer) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -633,6 +633,8 @@ func main() {
 	}
 
 	http.HandleFunc("/", server.handleIndex)
+	http.Handle("/js/", http.StripPrefix("/", http.FileServer(http.Dir("web"))))
+	http.Handle("/css/", http.StripPrefix("/", http.FileServer(http.Dir("web"))))
 	http.HandleFunc("/ws/shell", server.handleWebSocket)
 	http.HandleFunc("/restart", server.handleRestart)
 	http.HandleFunc("/resize", server.handleResize)
