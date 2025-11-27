@@ -21,11 +21,23 @@ import (
 
 const listenAddr = "127.0.0.1:7777"
 
-var wsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
+var (
+	wsUpgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+
+	// HTML widget markers for PTY output parsing
+	htmlStartMarker = []byte("\x1b]9001;HTML_START\x07")
+	htmlEndMarker   = []byte("\x1b]9001;HTML_END\x07")
+)
+
+// Default PTY size
+const (
+	defaultPTYRows = 24
+	defaultPTYCols = 80
+)
 
 // Widget represents a tracked widget session.
 type Widget struct {
@@ -82,18 +94,19 @@ func getForegroundPGID(fd uintptr) (int, error) {
 	return pgid, nil
 }
 
-func newShellServer() (*ShellServer, error) {
+// startPTY creates a new PTY running zsh with the standard environment.
+// Returns the pty file and the shell's process group ID.
+func startPTY() (*os.File, int, error) {
 	cmd := exec.Command("zsh", "-l")
-	// Set GOSHELL_HOME so shell profile can add command directories to PATH
 	goshellHome, _ := os.Getwd()
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOSHELL_HOME="+goshellHome)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Rows: 24,
-		Cols: 80,
+		Rows: defaultPTYRows,
+		Cols: defaultPTYCols,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("start zsh pty: %w", err)
+		return nil, 0, fmt.Errorf("start zsh pty: %w", err)
 	}
 
 	// Wait a bit for shell to start, then capture its PGID
@@ -101,7 +114,16 @@ func newShellServer() (*ShellServer, error) {
 	shellPGID, err := getForegroundPGID(ptyFile.Fd())
 	if err != nil {
 		ptyFile.Close()
-		return nil, fmt.Errorf("get shell PGID: %w", err)
+		return nil, 0, fmt.Errorf("get shell PGID: %w", err)
+	}
+
+	return ptyFile, shellPGID, nil
+}
+
+func newShellServer() (*ShellServer, error) {
+	ptyFile, shellPGID, err := startPTY()
+	if err != nil {
+		return nil, err
 	}
 
 	server := &ShellServer{
@@ -143,27 +165,24 @@ func containsAltScreenExit(data []byte) bool {
 // - remainingBuffer: incomplete HTML block data to keep for next read
 // - widgetIDs: IDs of extracted widgets
 func (s *ShellServer) extractAndStoreHTML(data []byte) ([]byte, []byte, []int) {
-	htmlStart := []byte("\x1b]9001;HTML_START\x07")
-	htmlEnd := []byte("\x1b]9001;HTML_END\x07")
-
 	result := data
 	var widgetIDs []int
 
 	for {
-		startIdx := bytes.Index(result, htmlStart)
+		startIdx := bytes.Index(result, htmlStartMarker)
 		if startIdx == -1 {
 			// No HTML_START found, return all data as processed
 			return result, nil, widgetIDs
 		}
 
-		endIdx := bytes.Index(result[startIdx:], htmlEnd)
+		endIdx := bytes.Index(result[startIdx:], htmlEndMarker)
 		if endIdx == -1 {
 			// Found HTML_START but no HTML_END - keep this for next read
 			return result[:startIdx], result[startIdx:], widgetIDs
 		}
 
 		// Extract the HTML content
-		htmlContentStart := startIdx + len(htmlStart)
+		htmlContentStart := startIdx + len(htmlStartMarker)
 		htmlContentEnd := startIdx + endIdx
 		htmlContent := result[htmlContentStart:htmlContentEnd]
 
@@ -182,25 +201,22 @@ func (s *ShellServer) extractAndStoreHTML(data []byte) ([]byte, []byte, []int) {
 			widgetID, linkText))
 
 		// Replace from HTML_START to HTML_END with the link
-		endIdx += startIdx + len(htmlEnd)
+		endIdx += startIdx + len(htmlEndMarker)
 		result = append(result[:startIdx], append(replacement, result[endIdx:]...)...)
 	}
 }
 
 // stripHTMLMode removes HTML mode sequences from buffer (used for cleaning up buffer)
 func stripHTMLMode(data []byte) []byte {
-	htmlStart := []byte("\x1b]9001;HTML_START\x07")
-	htmlEnd := []byte("\x1b]9001;HTML_END\x07")
-
 	result := data
 
 	for {
-		startIdx := bytes.Index(result, htmlStart)
+		startIdx := bytes.Index(result, htmlStartMarker)
 		if startIdx == -1 {
 			break
 		}
 
-		endIdx := bytes.Index(result[startIdx:], htmlEnd)
+		endIdx := bytes.Index(result[startIdx:], htmlEndMarker)
 		if endIdx == -1 {
 			// No matching end, strip from start to end of buffer
 			result = result[:startIdx]
@@ -208,7 +224,7 @@ func stripHTMLMode(data []byte) []byte {
 		}
 
 		// Just remove the HTML block entirely
-		endIdx += startIdx + len(htmlEnd)
+		endIdx += startIdx + len(htmlEndMarker)
 		result = append(result[:startIdx], result[endIdx:]...)
 	}
 
@@ -220,31 +236,17 @@ func (s *ShellServer) restart() error {
 	if s.ptyFile != nil {
 		s.ptyFile.Close()
 	}
-
-	cmd := exec.Command("zsh", "-l")
-	// Set GOSHELL_HOME so shell profile can add command directories to PATH
-	goshellHome, _ := os.Getwd()
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOSHELL_HOME="+goshellHome)
-
-	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Rows: 24,
-		Cols: 80,
-	})
-	if err != nil {
-		s.ptyMu.Unlock()
-		return fmt.Errorf("restart zsh pty: %w", err)
-	}
-
-	s.ptyFile = ptyFile
 	s.ptyMu.Unlock()
 
-	// Wait for shell to start, then capture new PGID
-	time.Sleep(100 * time.Millisecond)
-	shellPGID, err := getForegroundPGID(ptyFile.Fd())
+	ptyFile, shellPGID, err := startPTY()
 	if err != nil {
-		return fmt.Errorf("get shell PGID after restart: %w", err)
+		return err
 	}
+
+	s.ptyMu.Lock()
+	s.ptyFile = ptyFile
 	s.shellPGID = shellPGID
+	s.ptyMu.Unlock()
 
 	s.bufferMu.Lock()
 	s.buffer = nil
@@ -312,7 +314,9 @@ func (s *ShellServer) streamPTY() {
 	}
 }
 
-func (s *ShellServer) broadcast(data []byte) {
+// broadcastMessage sends a message to all connected clients.
+// If unregisterOnError is true, failed connections are unregistered.
+func (s *ShellServer) broadcastMessage(msgType int, data []byte, unregisterOnError bool) {
 	s.clientsMu.RLock()
 	conns := make([]*websocket.Conn, 0, len(s.clients))
 	for conn := range s.clients {
@@ -321,86 +325,41 @@ func (s *ShellServer) broadcast(data []byte) {
 	s.clientsMu.RUnlock()
 
 	for _, conn := range conns {
-		// Get the write mutex for this connection
 		s.connWriteMuM.Lock()
 		mu, ok := s.connWriteMu[conn]
 		s.connWriteMuM.Unlock()
 
 		if !ok {
-			continue // Connection was removed
+			continue
 		}
 
 		mu.Lock()
-		err := conn.WriteMessage(websocket.BinaryMessage, data)
+		err := conn.WriteMessage(msgType, data)
 		mu.Unlock()
 
 		if err != nil {
 			log.Printf("websocket write error: %v", err)
-			s.unregisterClient(conn)
+			if unregisterOnError {
+				s.unregisterClient(conn)
+			}
 		}
 	}
+}
+
+func (s *ShellServer) broadcast(data []byte) {
+	s.broadcastMessage(websocket.BinaryMessage, data, true)
 }
 
 func (s *ShellServer) broadcastStatus(state string) {
-	s.clientsMu.RLock()
-	conns := make([]*websocket.Conn, 0, len(s.clients))
-	for conn := range s.clients {
-		conns = append(conns, conn)
-	}
-	s.clientsMu.RUnlock()
-
 	msg := map[string]string{"kind": "status", "state": state}
 	data, _ := json.Marshal(msg)
-
-	for _, conn := range conns {
-		// Get the write mutex for this connection
-		s.connWriteMuM.Lock()
-		mu, ok := s.connWriteMu[conn]
-		s.connWriteMuM.Unlock()
-
-		if !ok {
-			continue // Connection was removed
-		}
-
-		mu.Lock()
-		err := conn.WriteMessage(websocket.TextMessage, data)
-		mu.Unlock()
-
-		if err != nil {
-			log.Printf("websocket status write error: %v", err)
-		}
-	}
+	s.broadcastMessage(websocket.TextMessage, data, false)
 }
 
 func (s *ShellServer) broadcastHTMLNotification(widgetID int) {
-	s.clientsMu.RLock()
-	conns := make([]*websocket.Conn, 0, len(s.clients))
-	for conn := range s.clients {
-		conns = append(conns, conn)
-	}
-	s.clientsMu.RUnlock()
-
-	msg := map[string]interface{}{"kind": "html", "widget_id": widgetID}
+	msg := map[string]any{"kind": "html", "widget_id": widgetID}
 	data, _ := json.Marshal(msg)
-
-	for _, conn := range conns {
-		// Get the write mutex for this connection
-		s.connWriteMuM.Lock()
-		mu, ok := s.connWriteMu[conn]
-		s.connWriteMuM.Unlock()
-
-		if !ok {
-			continue // Connection was removed
-		}
-
-		mu.Lock()
-		err := conn.WriteMessage(websocket.TextMessage, data)
-		mu.Unlock()
-
-		if err != nil {
-			log.Printf("websocket html notification write error: %v", err)
-		}
-	}
+	s.broadcastMessage(websocket.TextMessage, data, false)
 }
 
 func (s *ShellServer) monitorStatus() {
