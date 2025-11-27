@@ -84,10 +84,9 @@ func getForegroundPGID(fd uintptr) (int, error) {
 
 func newShellServer() (*ShellServer, error) {
 	cmd := exec.Command("zsh", "-l")
-	// Add lsh directory to PATH
-	lshPath, _ := os.Getwd()
-	newPath := fmt.Sprintf("%s/lsh:%s", lshPath, os.Getenv("PATH"))
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PATH="+newPath)
+	// Set GOSHELL_HOME so shell profile can add command directories to PATH
+	goshellHome, _ := os.Getwd()
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOSHELL_HOME="+goshellHome)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: 24,
@@ -223,10 +222,9 @@ func (s *ShellServer) restart() error {
 	}
 
 	cmd := exec.Command("zsh", "-l")
-	// Add lsh directory to PATH
-	lshPath, _ := os.Getwd()
-	newPath := fmt.Sprintf("%s/lsh:%s", lshPath, os.Getenv("PATH"))
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PATH="+newPath)
+	// Set GOSHELL_HOME so shell profile can add command directories to PATH
+	goshellHome, _ := os.Getwd()
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "GOSHELL_HOME="+goshellHome)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: 24,
