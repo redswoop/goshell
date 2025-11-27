@@ -3,6 +3,7 @@
 let term = null;
 let fitAddon = null;
 let linkActivateCallback = null;
+let customKeyHandlers = [];  // Array of {key, ctrl, handler} objects
 
 export function init(containerEl, options = {}) {
     if (options.onLinkActivate) {
@@ -34,7 +35,32 @@ export function init(containerEl, options = {}) {
     term.loadAddon(fitAddon);
     term.open(containerEl);
 
+    // Use window-level capturing to intercept keys before anything else
+    window.addEventListener('keydown', (event) => {
+        for (const handler of customKeyHandlers) {
+            const matches = event.code === handler.code &&
+                event.ctrlKey === !!handler.ctrl &&
+                event.shiftKey === !!handler.shift &&
+                event.altKey === !!handler.alt &&
+                event.metaKey === !!handler.meta;
+
+            if (matches) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                handler.callback(event);
+                return;
+            }
+        }
+    }, true);  // true = capturing phase, fires first
+
     return term;
+}
+
+// Register a custom key handler that intercepts before xterm
+// Options: { code: 'Space', ctrl: true, shift: false, callback: (e) => {} }
+export function registerKeyHandler(options) {
+    customKeyHandlers.push(options);
 }
 
 export function fit() {

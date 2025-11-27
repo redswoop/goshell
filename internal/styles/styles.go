@@ -168,10 +168,32 @@ func BaseCSS() string {
 	color: %s;
 	border-color: %s;
 }
+
+/* TokenGrid - keyboard navigable selection */
+.token-grid:focus {
+	outline: none;
+}
+.token-item {
+	cursor: pointer;
+}
+.token-item.cursor {
+	outline: 2px solid %s;
+	outline-offset: -2px;
+}
+.token-item.selected {
+	background-color: rgba(97, 175, 239, 0.25);
+}
+.token-item.selected.cursor {
+	background-color: rgba(97, 175, 239, 0.35);
+}
+.token-item.copy-flash {
+	background-color: rgba(152, 195, 121, 0.4);
+}
 `, Colors.Border, Colors.Blue, Colors.TextGray, Colors.BgHover,
 		Colors.Blue, Colors.Purple, Colors.Green, Colors.Yellow, Colors.TextGray,
 		Colors.TextGray, Colors.Blue, Colors.BgDark, Colors.Green, Colors.Blue,
-		Colors.BgDark, Colors.Blue, Colors.Border, Colors.BgHover, Colors.Green, Colors.Green)
+		Colors.BgDark, Colors.Blue, Colors.Border, Colors.BgHover, Colors.Green, Colors.Green,
+		Colors.Blue)
 }
 
 // FormatSize converts bytes to human-readable format

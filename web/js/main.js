@@ -98,6 +98,28 @@ function init() {
 
     // Expose runCommand globally for HTML widgets
     window.runCommand = api.runCommand;
+
+    // Set up HTML panel callbacks for TokenGrid integration
+    htmlPanel.setExitCallback(() => {
+        terminal.focus();
+    });
+
+    htmlPanel.setActionCallback((text) => {
+        // Insert selected items into terminal
+        connection.send(text);
+    });
+
+    // Register Ctrl+. hotkey to enter HTML panel focus
+    // (Ctrl+Space is often captured by OS for input source switching on macOS)
+    terminal.registerKeyHandler({
+        code: 'Period',
+        ctrl: true,
+        callback: () => {
+            if (htmlPanel.isVisible() && htmlPanel.hasGrid()) {
+                htmlPanel.enterFocus();
+            }
+        }
+    });
 }
 
 // Start when DOM is ready

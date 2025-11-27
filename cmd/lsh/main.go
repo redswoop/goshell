@@ -213,9 +213,9 @@ func main() {
 		styles.ResetTreeNodeCounter()
 		html.WriteString(styles.RenderTreeTable(nodes, config))
 	} else {
-		// Default: compact wrapped grid
-		html.WriteString(`<div class="lsh-grid">`)
-		for _, entry := range sortedEntries {
+		// Default: compact wrapped grid with TokenGrid data attributes
+		html.WriteString(`<div class="lsh-grid token-grid" data-grid-id="lsh" tabindex="0">`)
+		for i, entry := range sortedEntries {
 			info, err := entry.Info()
 			if err != nil {
 				continue
@@ -223,12 +223,18 @@ func main() {
 
 			nameClass := "shell-name"
 			icon := "📄"
+			itemType := "file"
 			if entry.IsDir() {
 				nameClass += " dir"
 				icon = "📁"
+				itemType = "dir"
 			}
 
-			html.WriteString(`<span class="lsh-item">`)
+			// Shell-quoted value for clipboard/insert operations
+			quotedValue := styles.ShellQuote(entry.Name())
+
+			html.WriteString(fmt.Sprintf(`<span class="lsh-item token-item" data-id="%d" data-value="%s" data-type="%s">`,
+				i, styles.HTMLEscape(quotedValue), itemType))
 			html.WriteString(`<span class="shell-icon">` + icon + `</span>`)
 			html.WriteString(fmt.Sprintf(`<span class="%s">%s</span>`, nameClass, styles.HTMLEscape(entry.Name())))
 			html.WriteString(fmt.Sprintf(`<span class="lsh-size">%s</span>`, styles.FormatSize(info.Size())))
