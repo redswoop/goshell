@@ -5,3 +5,5 @@ lsh/lsh
 *.swo
 *~
 .DS_Store
+bin/
+coverage.out
