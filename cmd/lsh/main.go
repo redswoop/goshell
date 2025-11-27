@@ -167,34 +167,51 @@ func main() {
 `)
 
 	if *longFormat {
-		// Long format: vertical list with full details
-		html.WriteString(`<ul class="shell-list">`)
+		// Long format: use TreeTable component
+		html.WriteString(`<style>`)
+		html.WriteString(styles.TreeTableCSS())
+		html.WriteString(`</style>`)
+
+		// Build tree nodes from entries
+		var nodes []*styles.TreeNode
 		for _, entry := range sortedEntries {
 			info, err := entry.Info()
 			if err != nil {
 				continue
 			}
 
-			nameClass := "shell-name"
 			icon := "📄"
 			if entry.IsDir() {
-				nameClass += " dir"
 				icon = "📁"
 			}
 
 			mode := info.Mode().String()
 			modTime := info.ModTime().Format("Jan _2 15:04")
 
-			html.WriteString(`<li><div class="shell-row">`)
-			html.WriteString(`<span class="shell-toggle empty"></span>`)
-			html.WriteString(`<span class="shell-icon">` + icon + `</span>`)
-			html.WriteString(fmt.Sprintf(`<span class="%s">%s</span>`, nameClass, styles.HTMLEscape(entry.Name())))
-			html.WriteString(fmt.Sprintf(`<span class="shell-mode">%s</span>`, styles.HTMLEscape(mode)))
-			html.WriteString(fmt.Sprintf(`<span class="shell-date">%s</span>`, styles.HTMLEscape(modTime)))
-			html.WriteString(fmt.Sprintf(`<span class="shell-size">%s</span>`, styles.FormatSize(info.Size())))
-			html.WriteString(`</div></li>`)
+			nodes = append(nodes, &styles.TreeNode{
+				Icon:  icon,
+				IsDir: entry.IsDir(),
+				Cells: []string{
+					styles.HTMLEscape(entry.Name()),
+					styles.HTMLEscape(mode),
+					styles.HTMLEscape(modTime),
+					styles.FormatSize(info.Size()),
+				},
+			})
 		}
-		html.WriteString(`</ul>`)
+
+		config := styles.TreeTableConfig{
+			Columns: []styles.Column{
+				{Class: "name"},
+				{Class: "mode"},
+				{Class: "date"},
+				{Class: "size"},
+			},
+			TogglePrefix: "lsh",
+		}
+
+		styles.ResetTreeNodeCounter()
+		html.WriteString(styles.RenderTreeTable(nodes, config))
 	} else {
 		// Default: compact wrapped grid
 		html.WriteString(`<div class="lsh-grid">`)

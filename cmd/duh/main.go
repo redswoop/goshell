@@ -128,6 +128,7 @@ func renderHTML(root *dirEntry, absDir string) {
 
 	html.WriteString(`<style>`)
 	html.WriteString(styles.BaseCSS())
+	html.WriteString(styles.TreeTableCSS())
 	html.WriteString(`
 .duh-total {
 	font-size: 14px;
@@ -145,76 +146,67 @@ func renderHTML(root *dirEntry, absDir string) {
 <div class="shell-title">` + styles.HTMLEscape(absDir) + `</div>
 <div class="duh-total">` + styles.FormatSize(root.size) + ` <span class="duh-total-label">total</span></div>
 </div>
-<ul class="shell-list">
 `)
 
-	// Render children of root (not the root itself since we show it in header)
-	for _, child := range root.children {
-		renderNode(&html, child, root.size, 0)
+	// Build tree nodes from directory entries
+	nodes := buildTreeNodes(root.children, root.size)
+
+	config := styles.TreeTableConfig{
+		Columns: []styles.Column{
+			{Class: "name"},
+			{Class: "size"},
+		},
+		ShowBar:      true,
+		BarAfterCell: 0, // Insert bar after name
+		TogglePrefix: "duh",
 	}
 
+	styles.ResetTreeNodeCounter()
+	html.WriteString(styles.RenderTreeTable(nodes, config))
+
 	html.WriteString(`
-</ul>
 </div>
 `)
 
 	fmt.Print(html.String())
 }
 
-var nodeID int
+func buildTreeNodes(entries []*dirEntry, parentSize int64) []*styles.TreeNode {
+	var nodes []*styles.TreeNode
+	for _, entry := range entries {
+		node := buildTreeNode(entry, parentSize)
+		nodes = append(nodes, node)
+	}
+	return nodes
+}
 
-func renderNode(html *strings.Builder, entry *dirEntry, parentSize int64, depth int) {
-	nodeID++
-	id := nodeID
-
+func buildTreeNode(entry *dirEntry, parentSize int64) *styles.TreeNode {
 	// Calculate percentage of parent
 	var pct float64
 	if parentSize > 0 {
 		pct = float64(entry.size) / float64(parentSize) * 100
 	}
 
-	hasChildren := len(entry.children) > 0
-
-	html.WriteString(`<li>`)
-	html.WriteString(`<div class="shell-row">`)
-
-	// Toggle button
-	if hasChildren {
-		html.WriteString(fmt.Sprintf(`<span id="duh-toggle-%d" class="shell-toggle" onclick="var c=document.getElementById('duh-children-%d');var t=this;if(c.classList.contains('expanded')){c.classList.remove('expanded');t.textContent='▶';}else{c.classList.add('expanded');t.textContent='▼';}">▶</span>`, id, id))
-	} else {
-		html.WriteString(`<span class="shell-toggle empty"></span>`)
-	}
-
-	// Icon
+	icon := "📄"
 	if entry.isDir {
-		html.WriteString(`<span class="shell-icon">📁</span>`)
-	} else {
-		html.WriteString(`<span class="shell-icon">📄</span>`)
+		icon = "📁"
 	}
 
-	// Name
-	nameClass := "shell-name"
-	if entry.isDir {
-		nameClass += " dir"
-	}
-	html.WriteString(fmt.Sprintf(`<span class="%s">%s</span>`, nameClass, styles.HTMLEscape(entry.name)))
-
-	// Size bar
-	html.WriteString(fmt.Sprintf(`<div class="shell-bar-container"><div class="shell-bar" style="width: %.1f%%"></div></div>`, pct))
-
-	// Size
-	html.WriteString(fmt.Sprintf(`<span class="shell-size">%s</span>`, styles.FormatSize(entry.size)))
-
-	html.WriteString(`</div>`)
-
-	// Children
-	if hasChildren {
-		html.WriteString(fmt.Sprintf(`<ul id="duh-children-%d" class="shell-children">`, id))
-		for _, child := range entry.children {
-			renderNode(html, child, entry.size, depth+1)
-		}
-		html.WriteString(`</ul>`)
+	node := &styles.TreeNode{
+		Icon:       icon,
+		IsDir:      entry.isDir,
+		Expandable: len(entry.children) > 0,
+		BarPercent: pct,
+		Cells: []string{
+			styles.HTMLEscape(entry.name),
+			styles.FormatSize(entry.size),
+		},
 	}
 
-	html.WriteString(`</li>`)
+	// Recursively build children
+	if len(entry.children) > 0 {
+		node.Children = buildTreeNodes(entry.children, entry.size)
+	}
+
+	return node
 }
