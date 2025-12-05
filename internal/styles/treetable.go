@@ -37,6 +37,7 @@ type TreeNode struct {
 	Children    []*TreeNode       // Child nodes
 	OnClick     string            // Optional onclick handler for the row
 	BarPercent  float64           // Percentage for bar visualization (0-100)
+	Value       string            // Value to insert (shell-escaped) for keyboard navigation
 }
 
 // TreeTableConfig configures the tree table component
@@ -45,6 +46,7 @@ type TreeTableConfig struct {
 	ShowBar       bool        // Show percentage bar (like duh)
 	BarAfterCell  int         // Insert bar after this cell index (-1 to disable)
 	TogglePrefix  string      // ID prefix for toggle elements (e.g., "duh", "lsh")
+	TreeID        string      // ID for the tree container (enables keyboard navigation)
 }
 
 // TreeTableCSS returns CSS for the tree table component
@@ -69,6 +71,22 @@ func TreeTableCSS() string {
 }
 .tree-row:hover {
 	background-color: %s;
+}
+.tree-row.cursor {
+	outline: 2px solid %s;
+	outline-offset: -2px;
+}
+.tree-row.selected {
+	background-color: rgba(97, 175, 239, 0.25);
+}
+.tree-row.selected.cursor {
+	background-color: rgba(97, 175, 239, 0.35);
+}
+.tree-row.copy-flash {
+	background-color: rgba(152, 195, 121, 0.4);
+}
+.tree-table:focus {
+	outline: none;
 }
 .tree-toggle {
 	width: 14px;
@@ -145,7 +163,7 @@ func TreeTableCSS() string {
 .tree-children.expanded {
 	display: block;
 }
-`, Colors.BgHover, Colors.TextGray, Colors.Blue, Colors.Blue,
+`, Colors.BgHover, Colors.Blue, Colors.TextGray, Colors.Blue, Colors.Blue,
 		Colors.Purple, Colors.Green, Colors.Yellow, Colors.TextGray,
 		Colors.BgDark, Colors.Green, Colors.Blue)
 }
@@ -154,7 +172,12 @@ func TreeTableCSS() string {
 func RenderTreeTable(nodes []*TreeNode, config TreeTableConfig) string {
 	var html strings.Builder
 
-	html.WriteString(`<ul class="tree-table">`)
+	// Add data-tree-id and tabindex for keyboard navigation
+	if config.TreeID != "" {
+		html.WriteString(fmt.Sprintf(`<ul class="tree-table" data-tree-id="%s" tabindex="0">`, config.TreeID))
+	} else {
+		html.WriteString(`<ul class="tree-table">`)
+	}
 	for _, node := range nodes {
 		renderTreeNode(&html, node, config, 0)
 	}
@@ -178,7 +201,18 @@ func renderTreeNode(html *strings.Builder, node *TreeNode, config TreeTableConfi
 	}
 
 	html.WriteString(`<li>`)
+
+	// Build tree-row with data attributes for keyboard navigation
 	html.WriteString(`<div class="tree-row"`)
+	html.WriteString(fmt.Sprintf(` data-row-id="%d"`, id))
+	if node.Value != "" {
+		html.WriteString(fmt.Sprintf(` data-value="%s"`, node.Value))
+	}
+	if node.IsDir {
+		html.WriteString(` data-type="dir"`)
+	} else {
+		html.WriteString(` data-type="file"`)
+	}
 	if node.OnClick != "" {
 		html.WriteString(fmt.Sprintf(` onclick="%s"`, node.OnClick))
 	}

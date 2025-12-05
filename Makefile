@@ -1,4 +1,4 @@
-.PHONY: all server tools lsh duh clean test
+.PHONY: all server tools lsh duh clean test test-integration
 
 # Output directory
 BIN := bin
@@ -29,9 +29,13 @@ $(BIN)/duh: cmd/duh/*.go
 	@mkdir -p $(BIN)
 	go build -o $(BIN)/duh ./cmd/duh
 
-# Run tests
+# Run unit tests (default, fast)
 test:
 	go test ./...
+
+# Run all tests including integration tests
+test-integration:
+	go test -tags=integration ./...
 
 # Clean build artifacts
 clean:

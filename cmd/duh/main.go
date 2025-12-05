@@ -159,6 +159,7 @@ func renderHTML(root *dirEntry, absDir string) {
 		ShowBar:      true,
 		BarAfterCell: 0, // Insert bar after name
 		TogglePrefix: "duh",
+		TreeID:       "duh",
 	}
 
 	styles.ResetTreeNodeCounter()
@@ -197,6 +198,7 @@ func buildTreeNode(entry *dirEntry, parentSize int64) *styles.TreeNode {
 		IsDir:      entry.isDir,
 		Expandable: len(entry.children) > 0,
 		BarPercent: pct,
+		Value:      styles.HTMLEscape(styles.ShellQuote(entry.name)),
 		Cells: []string{
 			styles.HTMLEscape(entry.name),
 			styles.FormatSize(entry.size),

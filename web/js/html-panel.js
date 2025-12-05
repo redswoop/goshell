@@ -2,6 +2,7 @@
 
 import * as splitter from './splitter.js';
 import { TokenGrid } from './token-grid.js';
+import { TreeTable } from './tree-table.js';
 import { StickySelectionManager } from './selection-manager.js';
 
 let panelEl = null;
@@ -10,6 +11,7 @@ let resizeCallback = null;
 let exitCallback = null;      // Called when user exits panel focus
 let actionCallback = null;    // Called when user performs action (e.g., insert to terminal)
 let activeGrid = null;        // Current TokenGrid instance
+let activeTable = null;       // Current TreeTable instance
 
 export function init(panel, splitterEl, toggleBtn, options = {}) {
     panelEl = panel;
@@ -112,24 +114,40 @@ export function setActionCallback(callback) {
     actionCallback = callback;
 }
 
-// Initialize TokenGrid if navigable content is present
+// Initialize navigable components if present
 function initializeGrid() {
-    // Destroy previous grid if any
+    // Destroy previous instances
     if (activeGrid) {
         activeGrid.destroy();
         activeGrid = null;
     }
+    if (activeTable) {
+        activeTable.destroy();
+        activeTable = null;
+    }
 
-    // Look for token grid container
+    // Look for token grid container (used by lsh compact mode)
     const gridEl = panelEl.querySelector('[data-grid-id]');
-    if (!gridEl) return;
+    if (gridEl) {
+        activeGrid = new TokenGrid(gridEl, {
+            selectionManager: new StickySelectionManager(),
+            onAction: handleGridAction,
+            onExit: handleGridExit,
+            onCopy: handleGridCopy
+        });
+        return;
+    }
 
-    activeGrid = new TokenGrid(gridEl, {
-        selectionManager: new StickySelectionManager(),
-        onAction: handleGridAction,
-        onExit: handleGridExit,
-        onCopy: handleGridCopy
-    });
+    // Look for tree table container (used by lsh -l and duh)
+    const tableEl = panelEl.querySelector('[data-tree-id]');
+    if (tableEl) {
+        activeTable = new TreeTable(tableEl, {
+            selectionManager: new StickySelectionManager(),
+            onAction: handleTableAction,
+            onExit: handleTableExit,
+            onCopy: handleTableCopy
+        });
+    }
 }
 
 function handleGridAction(items) {
@@ -156,6 +174,29 @@ function handleGridCopy(items) {
     console.log(`Copied ${items.length} item(s) to clipboard`);
 }
 
+function handleTableAction(items) {
+    // Insert items to terminal
+    const text = items.map(item => item.value).join(' ');
+    if (actionCallback) {
+        actionCallback(text);
+    }
+    // Return focus to terminal after action
+    handleTableExit();
+}
+
+function handleTableExit() {
+    if (activeTable) {
+        activeTable.deactivate();
+    }
+    if (exitCallback) {
+        exitCallback();
+    }
+}
+
+function handleTableCopy(items) {
+    console.log(`Copied ${items.length} item(s) to clipboard`);
+}
+
 // Enter focus mode for the HTML panel (called via hotkey)
 export function enterFocus() {
     if (!isVisible()) {
@@ -165,10 +206,14 @@ export function enterFocus() {
         activeGrid.activate();
         return true;
     }
+    if (activeTable) {
+        activeTable.activate();
+        return true;
+    }
     return false;
 }
 
-// Check if panel has a navigable grid
+// Check if panel has navigable content
 export function hasGrid() {
-    return activeGrid !== null;
+    return activeGrid !== null || activeTable !== null;
 }

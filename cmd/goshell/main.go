@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,7 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const listenAddr = "127.0.0.1:7777"
+var flagAddr = flag.String("addr", "127.0.0.1:7777", "address to listen on (host:port)")
 
 var (
 	wsUpgrader = websocket.Upgrader{
@@ -405,6 +406,7 @@ func (s *ShellServer) addClient(conn *websocket.Conn) {
 	// Create a write mutex for this connection
 	s.connWriteMuM.Lock()
 	s.connWriteMu[conn] = &sync.Mutex{}
+	mu := s.connWriteMu[conn]
 	s.connWriteMuM.Unlock()
 
 	s.clientsMu.Lock()
@@ -416,16 +418,13 @@ func (s *ShellServer) addClient(conn *websocket.Conn) {
 	copy(buffered, s.buffer)
 	s.bufferMu.Unlock()
 
+	mu.Lock()
 	if len(buffered) > 0 {
-		// Use the write mutex for initial buffered data
-		s.connWriteMuM.Lock()
-		mu := s.connWriteMu[conn]
-		s.connWriteMuM.Unlock()
-
-		mu.Lock()
 		conn.WriteMessage(websocket.BinaryMessage, buffered)
-		mu.Unlock()
 	}
+	// Signal that server is ready and all buffered content has been sent
+	conn.WriteMessage(websocket.TextMessage, []byte(`{"kind":"ready"}`))
+	mu.Unlock()
 }
 
 func (s *ShellServer) unregisterClient(conn *websocket.Conn) {
@@ -627,6 +626,8 @@ func RefreshWidget(id string) {
 }
 
 func main() {
+	flag.Parse()
+
 	server, err := newShellServer()
 	if err != nil {
 		log.Fatalf("create shell server: %v", err)
@@ -641,8 +642,8 @@ func main() {
 	http.HandleFunc("/widget/", server.handleWidgetAction)
 	http.HandleFunc("/htmlwidget/", server.handleHTMLWidget)
 
-	log.Printf("server listening on http://%s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, nil); err != nil {
+	log.Printf("server listening on http://%s", *flagAddr)
+	if err := http.ListenAndServe(*flagAddr, nil); err != nil {
 		log.Fatalf("http server stopped: %v", err)
 	}
 }

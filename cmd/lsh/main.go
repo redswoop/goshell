@@ -191,6 +191,7 @@ func main() {
 			nodes = append(nodes, &styles.TreeNode{
 				Icon:  icon,
 				IsDir: entry.IsDir(),
+				Value: styles.HTMLEscape(styles.ShellQuote(entry.Name())),
 				Cells: []string{
 					styles.HTMLEscape(entry.Name()),
 					styles.HTMLEscape(mode),
@@ -208,6 +209,7 @@ func main() {
 				{Class: "size"},
 			},
 			TogglePrefix: "lsh",
+			TreeID:       "lsh",
 		}
 
 		styles.ResetTreeNodeCounter()
